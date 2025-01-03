@@ -1,7 +1,8 @@
+#include "wx/wxvbam.h"
+
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
-#include <vector>
 
 #ifdef __WXGTK__
     #include <X11/Xlib.h>
@@ -19,25 +20,37 @@
 
 #include <wx/dcbuffer.h>
 #include <wx/menu.h>
-#include <SDL_joystick.h>
 
-#include "../common/Patch.h"
-#include "../common/version_cpp.h"
-#include "../gb/gbPrinter.h"
-#include "../gba/RTC.h"
-#include "../gba/agbprint.h"
-#include "../sdl/text.h"
-#include "background-input.h"
-#include "config/game-control.h"
-#include "config/option-proxy.h"
-#include "config/option.h"
-#include "config/user-input.h"
-#include "drawing.h"
-#include "filters.h"
-#include "wayland.h"
-#include "widgets/render-plugin.h"
-#include "wxutil.h"
-#include "wxvbam.h"
+#include "components/draw_text/draw_text.h"
+#include "components/filters/filters.h"
+#include "components/filters_agb/filters_agb.h"
+#include "components/filters_interframe/interframe.h"
+#include "core/base/check.h"
+#include "core/base/file_util.h"
+#include "core/base/patch.h"
+#include "core/base/system.h"
+#include "core/base/version.h"
+#include "core/gb/gb.h"
+#include "core/gb/gbCheats.h"
+#include "core/gb/gbGlobals.h"
+#include "core/gb/gbPrinter.h"
+#include "core/gb/gbSound.h"
+#include "core/gba/gbaCheats.h"
+#include "core/gba/gbaFlash.h"
+#include "core/gba/gbaGlobals.h"
+#include "core/gba/gbaPrint.h"
+#include "core/gba/gbaRtc.h"
+#include "core/gba/gbaSound.h"
+#include "wx/background-input.h"
+#include "wx/config/cmdtab.h"
+#include "wx/config/emulated-gamepad.h"
+#include "wx/config/option-id.h"
+#include "wx/config/option-proxy.h"
+#include "wx/config/option.h"
+#include "wx/drawing.h"
+#include "wx/wayland.h"
+#include "wx/widgets/render-plugin.h"
+#include "wx/widgets/user-input-event.h"
 
 #ifdef __WXMSW__
 #include <windows.h>
@@ -77,11 +90,33 @@ double GetFilterScale() {
             return 6.0;
         case config::Filter::kPlugin:
         case config::Filter::kLast:
-            assert(false);
+            VBAM_NOTREACHED();
             return 1.0;
     }
-    assert(false);
+    VBAM_NOTREACHED();
     return 1.0;
+}
+
+long GetSampleRate() {
+    switch (OPTION(kSoundAudioRate)) {
+        case config::AudioRate::k48kHz:
+            return 48000;
+            break;
+        case config::AudioRate::k44kHz:
+            return 44100;
+            break;
+        case config::AudioRate::k22kHz:
+            return 22050;
+            break;
+        case config::AudioRate::k11kHz:
+            return 11025;
+            break;
+        case config::AudioRate::kLast:
+            VBAM_NOTREACHED();
+            return 44100;
+    }
+    VBAM_NOTREACHED();
+    return 44100;
 }
 
 #define out_16 (systemColorDepth == 16)
@@ -108,28 +143,29 @@ GameArea::GameArea()
       paused(false),
       pointer_blanked(false),
       mouse_active_time(0),
-      render_observer_(
-          {config::OptionID::kDispBilinear, config::OptionID::kDispFilter,
-           config::OptionID::kDispRenderMethod, config::OptionID::kDispIFB,
-           config::OptionID::kDispStretch, config::OptionID::kPrefVsync},
-          std::bind(&GameArea::ResetPanel, this)),
-      scale_observer_(config::OptionID::kDispScale,
-                      std::bind(&GameArea::AdjustSize, this, true)),
-      gb_border_observer_(
-          config::OptionID::kPrefBorderOn,
-          std::bind(&GameArea::OnGBBorderChanged, this, std::placeholders::_1)),
-      gb_palette_observer_(
-          {config::OptionID::kGBPalette0, config::OptionID::kGBPalette1,
-           config::OptionID::kGBPalette2,
-           config::OptionID::kPrefGBPaletteOption},
-          std::bind(&gbResetPalette)),
-      gb_declick_observer_(config::OptionID::kSoundGBDeclicking,
-                           [&](config::Option* option) {
-                               gbSoundSetDeclicking(option->GetBool());
-                           }),
-      lcd_filters_observer_(
-          {config::OptionID::kGBLCDFilter, config::OptionID::kGBALCDFilter},
-          std::bind(&GameArea::UpdateLcdFilter, this)) {
+      render_observer_({config::OptionID::kDispBilinear, config::OptionID::kDispFilter,
+                        config::OptionID::kDispRenderMethod, config::OptionID::kDispIFB,
+                        config::OptionID::kDispStretch, config::OptionID::kPrefVsync},
+                       std::bind(&GameArea::ResetPanel, this)),
+      scale_observer_(config::OptionID::kDispScale, std::bind(&GameArea::AdjustSize, this, true)),
+      gb_border_observer_(config::OptionID::kPrefBorderOn,
+                          std::bind(&GameArea::OnGBBorderChanged, this, std::placeholders::_1)),
+      gb_palette_observer_({config::OptionID::kGBPalette0, config::OptionID::kGBPalette1,
+                            config::OptionID::kGBPalette2, config::OptionID::kPrefGBPaletteOption},
+                           std::bind(&gbResetPalette)),
+      gb_declick_observer_(
+          config::OptionID::kSoundGBDeclicking,
+          [&](config::Option* option) { gbSoundSetDeclicking(option->GetBool()); }),
+      lcd_filters_observer_({config::OptionID::kGBLCDFilter, config::OptionID::kGBALCDFilter},
+                            std::bind(&GameArea::UpdateLcdFilter, this)),
+      audio_rate_observer_(config::OptionID::kSoundAudioRate,
+                           std::bind(&GameArea::OnAudioRateChanged, this)),
+      audio_volume_observer_(config::OptionID::kSoundVolume,
+                             std::bind(&GameArea::OnVolumeChanged, this, std::placeholders::_1)),
+      audio_observer_({config::OptionID::kSoundAudioAPI, config::OptionID::kSoundAudioDevice,
+                       config::OptionID::kSoundBuffers, config::OptionID::kSoundDSoundHWAccel,
+                       config::OptionID::kSoundUpmix},
+                      [&](config::Option*) { schedule_audio_restart_ = true; }) {
     SetSizer(new wxBoxSizer(wxVERTICAL));
     // all renderers prefer 32-bit
     // well, "simple" prefers 24-bit, but that's not available for filters
@@ -153,19 +189,19 @@ void GameArea::LoadGame(const wxString& name)
         wxString rp = fnfn.GetPath();
 
         // can't really decide which dir to use, so try GBA first, then GB
-        const wxString& gba_rom_dir = OPTION(kGBAROMDir);
+        const wxString gba_rom_dir = OPTION(kGBAROMDir);
         if (!wxGetApp().GetAbsolutePath(gba_rom_dir).empty()) {
             fnfn.SetPath(wxGetApp().GetAbsolutePath(gba_rom_dir) + '/' + rp);
             badfile = !fnfn.IsFileReadable();
         }
 
-        const wxString& gb_rom_dir = OPTION(kGBROMDir);
+        const wxString gb_rom_dir = OPTION(kGBROMDir);
         if (badfile && !wxGetApp().GetAbsolutePath(gb_rom_dir).empty()) {
             fnfn.SetPath(wxGetApp().GetAbsolutePath(gb_rom_dir) + '/' + rp);
             badfile = !fnfn.IsFileReadable();
         }
 
-        const wxString& gbc_rom_dir = OPTION(kGBGBCROMDir);
+        const wxString gbc_rom_dir = OPTION(kGBGBCROMDir);
         if (badfile && !wxGetApp().GetAbsolutePath(gbc_rom_dir).empty()) {
             fnfn.SetPath(wxGetApp().GetAbsolutePath(gbc_rom_dir) + '/' + rp);
             badfile = !fnfn.IsFileReadable();
@@ -227,15 +263,15 @@ void GameArea::LoadGame(const wxString& name)
         if (!pfn.IsFileReadable()) {
             pfn.SetExt(wxT("ups"));
 
-			if (!pfn.IsFileReadable()) {
-				pfn.SetExt(wxT("bps"));
+            if (!pfn.IsFileReadable()) {
+                pfn.SetExt(wxT("bps"));
 
-				if (!pfn.IsFileReadable()) {
-					pfn.SetExt(wxT("ppf"));
-					loadpatch = pfn.IsFileReadable();
-				}
-			}
-		}
+                if (!pfn.IsFileReadable()) {
+                    pfn.SetExt(wxT("ppf"));
+                    loadpatch = pfn.IsFileReadable();
+                }
+            }
+        }
     }
 
     if (t == IMAGE_GB) {
@@ -251,17 +287,25 @@ void GameArea::LoadGame(const wxString& name)
             gbApplyPatch(UTF8(pfn.GetFullPath()));
         }
 
+        // Apply overrides.
+        wxFileConfig* cfg = wxGetApp().gb_overrides_.get();
+        const std::string& title = g_gbCartData.title();
+        if (cfg->HasGroup(title)) {
+            cfg->SetPath(title);
+            coreOptions.gbPrinterEnabled = cfg->Read("gbPrinter", coreOptions.gbPrinterEnabled);
+            cfg->SetPath("/");
+        }
+
         // start sound; this must happen before CPU stuff
         gb_effects_config.enabled = OPTION(kSoundGBEnableEffects);
         gb_effects_config.surround = OPTION(kSoundGBSurround);
-        gb_effects_config.echo = (float)gopts.gb_echo / 100.0;
-        gb_effects_config.stereo = (float)gopts.gb_stereo / 100.0;
+        gb_effects_config.echo = (float)OPTION(kSoundGBEcho) / 100.0;
+        gb_effects_config.stereo = (float)OPTION(kSoundGBStereo) / 100.0;
         if (!soundInit()) {
             wxLogError(_("Could not initialize the sound driver!"));
         }
         soundSetEnable(gopts.sound_en);
-        gbSoundSetSampleRate(!gopts.sound_qual ? 48000 : 44100 / (1 << (gopts.sound_qual - 1)));
-        soundSetVolume((float)gopts.sound_vol / 100.0);
+        gbSoundSetSampleRate(GetSampleRate());
         // this **MUST** be called **AFTER** setting sample rate because the core calls soundInit()
         soundSetThrottle(coreOptions.throttle);
         gbGetHardwareType();
@@ -312,20 +356,20 @@ void GameArea::LoadGame(const wxString& name)
             return;
         }
 
-        rom_crc32 = crc32(0L, rom, rom_size);
+        rom_crc32 = crc32(0L, g_rom, rom_size);
 
         if (loadpatch) {
             // don't use real rom size or it might try to resize rom[]
             // instead, use known size of rom[]
             int size = 0x2000000 < rom_size ? 0x2000000 : rom_size;
-            applyPatch(UTF8(pfn.GetFullPath()), &rom, &size);
+            applyPatch(UTF8(pfn.GetFullPath()), &g_rom, &size);
             // that means we no longer really know rom_size either <sigh>
 
             gbaUpdateRomSize(size);
         }
 
-        wxFileConfig* cfg = wxGetApp().overrides;
-        wxString id = wxString((const char*)&rom[0xac], wxConvLibc, 4);
+        wxFileConfig* cfg = wxGetApp().overrides_.get();
+        wxString id = wxString((const char*)&g_rom[0xac], wxConvLibc, 4);
 
         if (cfg->HasGroup(id)) {
             cfg->SetPath(id);
@@ -345,7 +389,7 @@ void GameArea::LoadGame(const wxString& name)
                 ovSaveType = 0;
 
             if (ovSaveType == 0)
-                utilGBAFindSave(rom_size);
+                flashDetectSaveType(rom_size);
             else
                 coreOptions.saveType = ovSaveType;
 
@@ -359,7 +403,7 @@ void GameArea::LoadGame(const wxString& name)
                 coreOptions.cpuSaveType = 0;
 
             if (coreOptions.cpuSaveType == 0)
-                utilGBAFindSave(rom_size);
+                flashDetectSaveType(rom_size);
             else
                 coreOptions.saveType = coreOptions.cpuSaveType;
 
@@ -372,11 +416,10 @@ void GameArea::LoadGame(const wxString& name)
             wxLogError(_("Could not initialize the sound driver!"));
         }
         soundSetEnable(gopts.sound_en);
-        soundSetSampleRate(!gopts.sound_qual ? 48000 : 44100 / (1 << (gopts.sound_qual - 1)));
-        soundSetVolume((float)gopts.sound_vol / 100.0);
+        soundSetSampleRate(GetSampleRate());
         // this **MUST** be called **AFTER** setting sample rate because the core calls soundInit()
         soundSetThrottle(coreOptions.throttle);
-        soundFiltering = (float)gopts.gba_sound_filter / 100.0f;
+        soundFiltering = (float)OPTION(kSoundGBAFiltering) / 100.0f;
 
         rtcEnableRumble(true);
 
@@ -405,9 +448,8 @@ void GameArea::LoadGame(const wxString& name)
     AdjustSize(false);
     emulating = true;
     was_paused = true;
+    schedule_audio_restart_ = false;
     MainFrame* mf = wxGetApp().frame;
-    mf->StopJoyPollTimer();
-    mf->SetJoystick();
     mf->cmd_enable &= ~(CMDEN_GB | CMDEN_GBA);
     mf->cmd_enable |= ONLOAD_CMDEN;
     mf->cmd_enable |= loaded == IMAGE_GB ? CMDEN_GB : (CMDEN_GBA | CMDEN_NGDB_GBA);
@@ -423,7 +465,7 @@ void GameArea::LoadGame(const wxString& name)
     SuspendScreenSaver();
 
     // probably only need to do this for GB carts
-    if (coreOptions.winGbPrinterEnabled)
+    if (coreOptions.gbPrinterEnabled)
         gbSerialFunction = gbPrinterSend;
 
     // probably only need to do this for GBA carts
@@ -528,11 +570,11 @@ void GameArea::LoadGame(const wxString& name)
     }
 #endif
 
-#ifndef NO_DEBUGGER
+#if defined(VBAM_ENABLE_DEBUGGER)
     if (OPTION(kPrefGDBBreakOnLoad)) {
         mf->GDBBreak();
     }
-#endif
+#endif  // defined(VBAM_ENABLE_DEBUGGER)
 }
 
 void GameArea::SetFrameTitle()
@@ -545,7 +587,7 @@ void GameArea::SetFrameTitle()
     }
 
     tit.append(wxT("VisualBoyAdvance-M "));
-    tit.append(vbam_version);
+    tit.append(kVbamVersion);
 
 #ifndef NO_LINK
     int playerId = GetLinkPlayerId();
@@ -624,15 +666,18 @@ void GameArea::UnloadGame(bool destruct)
     systemStopGameRecording();
     systemStopGamePlayback();
 
-#ifndef NO_DEBUGGER
+#if defined(VBAM_ENABLE_DEBUGGER)
     debugger = false;
     remoteCleanUp();
     mf->cmd_enable |= CMDEN_NGDB_ANY;
-#endif
+#endif  // VBAM_ENABLE_DEBUGGER
 
     if (loaded == IMAGE_GB) {
         gbCleanUp();
         gbCheatRemoveAll();
+
+        // Reset overrides.
+        coreOptions.gbPrinterEnabled = OPTION(kPrefGBPrinter);
     } else if (loaded == IMAGE_GBA) {
         CPUCleanUp();
         cheatsDeleteAll(false);
@@ -663,8 +708,6 @@ void GameArea::UnloadGame(bool destruct)
     mf->cmd_enable &= UNLOAD_CMDEN_KEEP;
     mf->update_state_ts(true);
     mf->enable_menus();
-    mf->StartJoyPollTimer();
-    mf->SetJoystick();
     mf->ResetCheatSearch();
 
     if (rewind_mem)
@@ -921,10 +964,6 @@ void GameArea::ShowFullScreen(bool full)
         while (!tlw->popups.empty())
             tlw->popups.front()->Close();
 
-        // Some kbd accels can send a menu open event without a close event,
-        // this happens on Mac in HiDPI mode for the fullscreen toggle accel.
-        main_frame->SetMenusOpened(false);
-
         // mouse stays blank whenever full-screen
         HidePointer();
         cursz_valid = true;
@@ -1028,7 +1067,7 @@ GameArea::~GameArea()
 
 void GameArea::OnKillFocus(wxFocusEvent& ev)
 {
-    config::GameControlState::Instance().Reset();
+    wxGetApp().emulated_gamepad()->Reset();
     ev.Skip();
 }
 
@@ -1049,12 +1088,10 @@ void GameArea::Pause()
     // when the game is paused like this, we should not allow any
     // input to remain pressed, because they could be released
     // outside of the game zone and we would not know about it.
-    config::GameControlState::Instance().Reset();
+    wxGetApp().emulated_gamepad()->Reset();
 
     if (loaded != IMAGE_UNKNOWN)
         soundPause();
-
-    wxGetApp().frame->StartJoyPollTimer();
 }
 
 void GameArea::Resume()
@@ -1068,8 +1105,6 @@ void GameArea::Resume()
 
     if (loaded != IMAGE_UNKNOWN)
         soundResume();
-
-    wxGetApp().frame->StopJoyPollTimer();
 
     SetFocus();
 }
@@ -1085,7 +1120,7 @@ void GameArea::OnIdle(wxIdleEvent& event)
         wxGetApp().pending_load = wxEmptyString;
         LoadGame(pl);
 
-#ifndef NO_DEBUGGER
+#if defined(VBAM_ENABLE_DEBUGGER)
         if (OPTION(kPrefGDBBreakOnLoad)) {
             mf->GDBBreak();
         }
@@ -1094,7 +1129,7 @@ void GameArea::OnIdle(wxIdleEvent& event)
             wxLogError(_("Not a valid Game Boy Advance cartridge"));
             UnloadGame();
         }
-#endif
+#endif  // defined(VBAM_ENABLE_DEBUGGER)
     }
 
     // stupid wx doesn't resize to screen size
@@ -1112,6 +1147,14 @@ void GameArea::OnIdle(wxIdleEvent& event)
 
     if (!emusys)
         return;
+
+    if (schedule_audio_restart_) {
+        soundShutdown();
+        if (!soundInit()) {
+            wxLogError(_("Could not initialize the sound driver!"));
+        }
+        schedule_audio_restart_ = false;
+    }
 
     if (!panel) {
         switch (OPTION(kDispRenderMethod)) {
@@ -1135,38 +1178,38 @@ void GameArea::OnIdle(wxIdleEvent& event)
                 break;
 #endif
             case config::RenderMethod::kLast:
-                assert(false);
+                VBAM_NOTREACHED();
                 return;
         }
 
         wxWindow* w = panel->GetWindow();
 
         // set up event handlers
-        w->Connect(wxEVT_KEY_DOWN,         wxKeyEventHandler(GameArea::OnKeyDown),         NULL, this);
-        w->Connect(wxEVT_KEY_UP,           wxKeyEventHandler(GameArea::OnKeyUp),           NULL, this);
-        w->Connect(wxEVT_PAINT,            wxPaintEventHandler(GameArea::PaintEv),         NULL, this);
-        w->Connect(wxEVT_ERASE_BACKGROUND, wxEraseEventHandler(GameArea::EraseBackground), NULL, this);
+        w->Bind(VBAM_EVT_USER_INPUT, &GameArea::OnUserInput, this);
+        w->Bind(wxEVT_PAINT, &GameArea::PaintEv, this);
+        w->Bind(wxEVT_ERASE_BACKGROUND, &GameArea::EraseBackground, this);
 
         // set userdata so we know it's the panel and not the frame being resized
         // the userdata is freed on disconnect/destruction
-        this->Connect(wxEVT_SIZE,          wxSizeEventHandler(GameArea::OnSize),           NULL, this);
+        this->Bind(wxEVT_SIZE, &GameArea::OnSize, this);
 
         // We need to check if the buttons stayed pressed when focus the panel.
-        w->Connect(wxEVT_KILL_FOCUS,       wxFocusEventHandler(GameArea::OnKillFocus),     NULL, this);
+        w->Bind(wxEVT_KILL_FOCUS, &GameArea::OnKillFocus, this);
 
         // Update mouse last-used timers on mouse events etc..
-        w->Connect(wxEVT_MOTION,           wxMouseEventHandler(GameArea::MouseEvent),      NULL, this);
-        w->Connect(wxEVT_LEFT_DOWN,        wxMouseEventHandler(GameArea::MouseEvent),      NULL, this);
-        w->Connect(wxEVT_RIGHT_DOWN,       wxMouseEventHandler(GameArea::MouseEvent),      NULL, this);
-        w->Connect(wxEVT_MIDDLE_DOWN,      wxMouseEventHandler(GameArea::MouseEvent),      NULL, this);
-        w->Connect(wxEVT_MOUSEWHEEL,       wxMouseEventHandler(GameArea::MouseEvent),      NULL, this);
+        w->Bind(wxEVT_MOTION, &GameArea::MouseEvent, this);
+        w->Bind(wxEVT_LEFT_DOWN, &GameArea::MouseEvent, this);
+        w->Bind(wxEVT_RIGHT_DOWN, &GameArea::MouseEvent, this);
+        w->Bind(wxEVT_MIDDLE_DOWN, &GameArea::MouseEvent, this);
+        w->Bind(wxEVT_MOUSEWHEEL, &GameArea::MouseEvent, this);
 
         w->SetBackgroundStyle(wxBG_STYLE_CUSTOM);
         w->SetSize(wxSize(basic_width, basic_height));
 
         // Allow input while on background
-        if (OPTION(kUIAllowKeyboardBackgroundInput))
-            enableKeyboardBackgroundInput(w);
+        if (OPTION(kUIAllowKeyboardBackgroundInput)) {
+            enableKeyboardBackgroundInput(w->GetEventHandler());
+        }
 
         if (gopts.max_scale)
             w->SetMaxSize(wxSize(basic_width * gopts.max_scale,
@@ -1209,14 +1252,12 @@ void GameArea::OnIdle(wxIdleEvent& event)
         UpdateLcdFilter();
     }
 
-    mf->PollJoysticks();
-
     if (!paused) {
         HidePointer();
         HideMenuBar();
         event.RequestMore();
 
-#ifndef NO_DEBUGGER
+#if defined(VBAM_ENABLE_DEBUGGER)
         if (debugger) {
             was_paused = true;
             dbgMain();
@@ -1229,7 +1270,7 @@ void GameArea::OnIdle(wxIdleEvent& event)
 
             return;
         }
-#endif
+#endif  // defined(VBAM_ENABLE_DEBUGGER)
 
         emusys->emuMain(emusys->emuCount);
 #ifndef NO_LINK
@@ -1281,14 +1322,6 @@ void GameArea::OnIdle(wxIdleEvent& event)
     }
 }
 
-static bool process_user_input(bool down, const config::UserInput& user_input)
-{
-    if (down)
-        return config::GameControlState::Instance().OnInputPressed(user_input);
-    else
-        return config::GameControlState::Instance().OnInputReleased(user_input);
-}
-
 static void draw_black_background(wxWindow* win) {
     wxClientDC dc(win);
     wxCoord w, h;
@@ -1298,70 +1331,39 @@ static void draw_black_background(wxWindow* win) {
     dc.DrawRectangle(0, 0, w, h);
 }
 
-static void process_keyboard_event(const wxKeyEvent& ev, bool down)
-{
-    int kc = ev.GetKeyCode();
+#ifdef __WXGTK__
+static Display* GetX11Display() {
+    return GDK_WINDOW_XDISPLAY(gtk_widget_get_window(wxGetApp().frame->GetHandle()));
+}
+#endif  // __WXGTK__
 
-    // Under Wayland or if the key is unicode, we can't use wxGetKeyState().
-    if (!IsWayland() && kc != WXK_NONE) {
-        // Check if the key state corresponds to the event.
-        if (down != wxGetKeyState(static_cast<wxKeyCode>(kc))) {
-            return;
+void GameArea::OnUserInput(widgets::UserInputEvent& event) {
+    bool emulated_key_pressed = false;
+    for (const auto& event_data : event.data()) {
+        if (event_data.pressed) {
+            if (wxGetApp().emulated_gamepad()->OnInputPressed(event_data.input)) {
+                emulated_key_pressed = true;
+            }
+        } else {
+            if (wxGetApp().emulated_gamepad()->OnInputReleased(event_data.input)) {
+                emulated_key_pressed = true;
+            }
         }
     }
 
-    int key = getKeyboardKeyCode(ev);
-    int mod = ev.GetModifiers();
-
-    if (key == WXK_NONE) {
-        return;
-    }
-
-    // modifier-only key releases do not set the modifier flag
-    // so we set it here to match key release events to key press events
-    switch (key) {
-        case WXK_SHIFT:
-            mod |= wxMOD_SHIFT;
-            break;
-        case WXK_ALT:
-            mod |= wxMOD_ALT;
-            break;
-        case WXK_CONTROL:
-            mod |= wxMOD_CONTROL;
-            break;
-#ifdef __WXMAC__
-        case WXK_RAW_CONTROL:
-            mod |= wxMOD_RAW_CONTROL;
-            break;
-#endif
-        default:
-            // This resets mod for any non-modifier key. This has the side
-            // effect of not being able to set up a modifier+key for a game
-            // control.
-            mod = 0;
-            break;
-    }
-
-    if (process_user_input(down, config::UserInput(key, mod, 0))) {
+    if (emulated_key_pressed) {
         wxWakeUpIdle();
-    };
-}
 
-#ifdef __WXGTK__
-static Display* GetX11Display()
-{
-    return GDK_WINDOW_XDISPLAY(gtk_widget_get_window(wxGetApp().frame->GetHandle()));
-}
-#endif // __WXGTK__
-
-void GameArea::OnKeyDown(wxKeyEvent& ev)
-{
-    process_keyboard_event(ev, true);
-}
-
-void GameArea::OnKeyUp(wxKeyEvent& ev)
-{
-    process_keyboard_event(ev, false);
+#if defined(__WXGTK__) && defined(HAVE_X11) && !defined(HAVE_XSS)
+        // Tell X11 to turn off the screensaver/screen-blank if a button was
+        // was pressed. This shouldn't be necessary.
+        if (!wxGetApp().UsingWayland()) {
+            auto display = GetX11Display();
+            XResetScreenSaver(display);
+            XFlush(display);
+        }
+#endif
+    }
 }
 
 // these three are forwarded to the DrawingPanel instance
@@ -1388,24 +1390,8 @@ void GameArea::OnSize(wxSizeEvent& ev)
     ev.Skip();
 }
 
-void GameArea::OnSDLJoy(wxJoyEvent& ev)
-{
-    process_user_input(ev.pressed(), config::UserInput(ev));
-
-    // tell Linux to turn off the screensaver/screen-blank if joystick button was pressed
-    // this shouldn't be necessary of course
-#if defined(__WXGTK__) && defined(HAVE_X11) && !defined(HAVE_XSS)
-    if (!wxGetApp().UsingWayland()) {
-        auto display = GetX11Display();
-        XResetScreenSaver(display);
-        XFlush(display);
-    }
-#endif
-}
-
 BEGIN_EVENT_TABLE(GameArea, wxPanel)
 EVT_IDLE(GameArea::OnIdle)
-EVT_SDLJOY(GameArea::OnSDLJoy)
 // FIXME: wxGTK does not generate motion events in MainFrame (not sure
 // what to do about it)
 EVT_MOUSE_EVENTS(GameArea::MouseEvent)
@@ -1638,7 +1624,7 @@ private:
                 break;
 
             case config::Interframe::kLast:
-                assert(false);
+                VBAM_NOTREACHED();
                 break;
         }
     }
@@ -1781,7 +1767,7 @@ private:
 
             case config::Filter::kNone:
             case config::Filter::kLast:
-                assert(false);
+                VBAM_NOTREACHED();
                 break;
         }
     }
@@ -2390,13 +2376,6 @@ void GLDrawingPanel::AdjustViewport()
     int x, y;
     widgets::GetRealPixelClientSize(this, &x, &y);
     glViewport(0, 0, x, y);
-
-#ifdef DEBUG
-    // you can use this to check that the gl surface is indeed high res
-    GLint m_viewport[4];
-    glGetIntegerv(GL_VIEWPORT, m_viewport);
-    wxLogDebug(wxT("GL VIEWPORT: %d, %d, %d, %d"), m_viewport[0], m_viewport[1], m_viewport[2], m_viewport[3]);
-#endif
 }
 
 void GLDrawingPanel::RefreshGL()
@@ -2470,21 +2449,21 @@ static const wxString media_err(recording::MediaRet ret)
         return wxT("");
 
     case recording::MRET_ERR_NOMEM:
-        return _("memory allocation error");
+        return _("Memory allocation error");
 
     case recording::MRET_ERR_NOCODEC:
-        return _("error initializing codec");
+        return _("Error initializing codec");
 
     case recording::MRET_ERR_FERR:
-        return _("error writing to output file");
+        return _("Error writing to output file");
 
     case recording::MRET_ERR_FMTGUESS:
-        return _("can't guess output format from file name");
+        return _("Can't guess output format from file name");
 
     default:
         //    case MRET_ERR_RECORDING:
         //    case MRET_ERR_BUFSIZE:
-        return _("programming error; aborting!");
+        return _("Programming error; aborting!");
     }
 }
 
@@ -2671,11 +2650,11 @@ void GameArea::OnGBBorderChanged(config::Option* option) {
 
 void GameArea::UpdateLcdFilter() {
     if (loaded == IMAGE_GBA)
-        utilUpdateSystemColorMaps(OPTION(kGBALCDFilter));
+        gbafilter_update_colors(OPTION(kGBALCDFilter));
     else if (loaded == IMAGE_GB)
-        utilUpdateSystemColorMaps(OPTION(kGBLCDFilter));
+        gbafilter_update_colors(OPTION(kGBLCDFilter));
     else
-        utilUpdateSystemColorMaps(false);
+        gbafilter_update_colors(false);
 }
 
 void GameArea::SuspendScreenSaver() {
@@ -2700,4 +2679,29 @@ void GameArea::UnsuspendScreenSaver() {
         xscreensaver_suspended = false;
     }
 #endif // HAVE_XSS
+}
+
+void GameArea::OnAudioRateChanged() {
+    if (loaded == IMAGE_UNKNOWN) {
+        return;
+    }
+
+    switch (game_type()) {
+        case IMAGE_UNKNOWN:
+            break;
+
+        case IMAGE_GB:
+            gbSoundSetSampleRate(GetSampleRate());
+            break;
+
+        case IMAGE_GBA:
+            soundSetSampleRate(GetSampleRate());
+            break;
+    }
+}
+
+void GameArea::OnVolumeChanged(config::Option* option) {
+    const int volume = option->GetInt();
+    soundSetVolume((float)volume / 100.0);
+    systemScreenMessage(wxString::Format(_("Volume: %d %%"), volume));
 }

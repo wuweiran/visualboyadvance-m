@@ -2,12 +2,6 @@
 # Update version in appcast.xml to latest tag.
 # Commit web-data.
 
-find_package(Git)
-
-if(NOT GIT_FOUND)
-    message(FATAL_ERROR "git is required to update the appcast")
-endif()
-
 function(update_appcast)
     if(UPDATE_APPCAST STREQUAL UNDO)
 	file(REMOVE_RECURSE ${CMAKE_BINARY_DIR}/web-data)
@@ -22,7 +16,7 @@ Ignore the following cmake error.
     # Get last tag.
 
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} tag --sort=-v:refname
+        COMMAND git tag --sort=-v:refname
         OUTPUT_VARIABLE git_tags
         OUTPUT_STRIP_TRAILING_WHITESPACE
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
@@ -49,7 +43,7 @@ Ignore the following cmake error.
     # Clone repo.
 
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} clone git@github.com:visualboyadvance-m/visualboyadvance-m.github.io web-data
+        COMMAND git clone git@github.com:visualboyadvance-m/visualboyadvance-m.github.io web-data
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     )
 
@@ -81,10 +75,12 @@ Ignore the following cmake error.
     endwhile()
 
     # Convert to UNIX line endings on Windows, just copy the file otherwise.
-
     if(CMAKE_HOST_SYSTEM MATCHES Windows OR ((NOT DEFINED CMAKE_HOST_SYSTEM) AND WIN32))
+        if(NOT DEFINED POWERSHELL)
+            message(FATAL_ERROR "Powershell is required to convert line endings on Windows.")
+        endif()
         execute_process(
-            COMMAND powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -Command [=[
+            COMMAND ${POWERSHELL} -NoLogo -NoProfile -ExecutionPolicy Bypass -Command [=[
                 $text = [IO.File]::ReadAllText("appcast.xml.work") -replace "`r`n", "`n"
                 [IO.File]::WriteAllText("appcast.xml", $text)
             ]=]
@@ -107,21 +103,21 @@ Ignore the following cmake error.
     )
 
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} add appcast.xml
+        COMMAND git add appcast.xml
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/web-data
     )
 
     # Commit the change.
 
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} commit -m "release ${new_tag}" --signoff -S
+        COMMAND git commit -m "release ${new_tag}" --signoff -S
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/web-data
     )
 
     # Make release tag.
 
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} tag -s -m${new_tag} ${new_tag}
+        COMMAND git tag -s -m${new_tag} ${new_tag}
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/web-data
     )
 

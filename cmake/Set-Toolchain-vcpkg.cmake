@@ -1,9 +1,5 @@
-if(POLICY CMP0012)
-    cmake_policy(SET CMP0012 NEW) # Saner if() behavior.
-endif()
-
-if(POLICY CMP0135)
-    cmake_policy(SET CMP0135 NEW) # Use timestamps from archives.
+if(TRANSLATIONS_ONLY)
+    return()
 endif()
 
 if(NOT DEFINED VCPKG_TARGET_TRIPLET)
@@ -14,19 +10,28 @@ if(NOT DEFINED VCPKG_TARGET_TRIPLET)
     # Check if we are in an MSVC environment.
     find_program(cl_exe_path NAME cl.exe HINTS ENV PATH)
 
-    if($ENV{CXX} MATCHES "cl.exe$" OR cl_exe_path)
+    if(ENV{CXX} MATCHES "cl.exe$" OR cl_exe_path)
         # Infer the architecture from the LIB folders.
-        foreach(LIB $ENV{LIB})
-            if(${LIB} MATCHES "x64$")
+        foreach(lib $ENV{LIB})
+            if(lib MATCHES "x64$")
                 set(VBAM_VCPKG_PLATFORM "x64-windows-static")
                 break()
             endif()
-            if(${LIB} MATCHES "x86$")
+            if(lib MATCHES "x86$")
                 set(VBAM_VCPKG_PLATFORM "x86-windows-static")
                 break()
             endif()
-            if(${LIB} MATCHES "ARM64$")
+            if(lib MATCHES "ARM64$")
                 set(VBAM_VCPKG_PLATFORM "arm64-windows-static")
+
+                foreach(path $ENV{PATH})
+                    if(path MATCHES "[Hh]ost[Xx]64")
+                        set(VCPKG_HOST_TRIPLET "x64-windows-static" CACHE STRING "Vcpkg host triplet" FORCE)
+                        set(VCPKG_USE_HOST_TOOLS ON CACHE BOOL "Use vcpkg host tools" FORCE)
+                        break()
+                    endif()
+                endforeach()
+
                 break()
             endif()
         endforeach()
@@ -79,7 +84,7 @@ endfunction()
 
 function(vcpkg_check_git_status git_status)
     # The VS vcpkg component cannot be written to without elevation.
-    if(NOT git_status EQUAL 0 AND NOT VCPKG_ROOT MATCHES "^C:/Program Files/Microsoft Visual Studio/")
+    if(NOT git_status EQUAL 0 AND NOT VCPKG_ROOT MATCHES "Visual Studio")
         message(FATAL_ERROR "Error updating vcpkg from git, please make sure git for windows is installed correctly, it can be installed from Visual Studio components")
     endif()
 endfunction()
@@ -146,7 +151,7 @@ function(vcpkg_is_installed vcpkg_exe pkg_name pkg_ver pkg_triplet powershell ou
     string(REPLACE "-" "." pkg_ver ${pkg_ver})
 
     if(NOT DEFINED VCPKG_INSTALLED_COUNT)
-        if(VCPKG_ROOT MATCHES "^C:/Program Files/Microsoft Visual Studio/")
+        if(VCPKG_ROOT MATCHES "Visual Studio")
             execute_process(
                 COMMAND ${powershell}
                     -executionpolicy bypass -noprofile
@@ -277,12 +282,6 @@ function(get_binary_packages vcpkg_exe)
         FetchContent_Populate(vcpkg_binpkg)
     endif()
 
-    if(WIN32)
-        find_program(powershell powershell.exe HINTS "/Windows/System32/WindowsPowerShell/v1.0" REQUIRED)
-    else()
-        find_program(powershell pwsh REQUIRED)
-    endif()
-
     unset(to_install)
     foreach(pkg ${binary_packages})
         if(NOT pkg MATCHES "([^_]+)_([^_]+)_([^.]+)[.]zip")
@@ -292,7 +291,7 @@ function(get_binary_packages vcpkg_exe)
         set(pkg_version ${CMAKE_MATCH_2})
         set(pkg_triplet ${CMAKE_MATCH_3})
 
-        vcpkg_is_installed(${vcpkg_exe} ${pkg_name} ${pkg_version} ${pkg_triplet} ${powershell} pkg_installed)
+        vcpkg_is_installed(${vcpkg_exe} ${pkg_name} ${pkg_version} ${pkg_triplet} ${POWERSHELL} pkg_installed)
 
         if(NOT pkg_installed)
             list(APPEND to_install ${pkg})
@@ -325,7 +324,7 @@ function(get_binary_packages vcpkg_exe)
 
 #                -command "import-module ($env:USERPROFILE + '/source/repos/vcpkg-binpkg-prototype/vcpkg-binpkg.psm1'); vcpkg-instpkg ."
         execute_process(
-            COMMAND ${powershell}
+            COMMAND ${POWERSHELL}
                 -executionpolicy bypass -noprofile
                 -command "import-module '${CMAKE_BINARY_DIR}/vcpkg-binpkg/vcpkg-binpkg.psm1'; vcpkg-instpkg ."
             WORKING_DIRECTORY ${bin_pkgs_dir}
@@ -356,6 +355,9 @@ function(vcpkg_remove_optional_deps vcpkg_exe)
 endfunction()
 
 function(vcpkg_set_toolchain)
+    if(NOT DEFINED POWERSHELL)
+        message(FATAL_ERROR "Powershell is required to use vcpkg binaries.")
+    endif()
     if(NOT DEFINED ENV{VCPKG_ROOT})
         get_filename_component(preferred_root ${CMAKE_SOURCE_DIR}/../vcpkg ABSOLUTE)
 
@@ -574,14 +576,4 @@ endfunction()
 
 vcpkg_set_toolchain()
 
-# Make vcpkg use debug libs for RelWithDebInfo
-set(orig_build_type ${CMAKE_BUILD_TYPE})
-
-if(CMAKE_BUILD_TYPE STREQUAL RelWithDebInfo)
-    set(CMAKE_BUILD_TYPE Debug)
-endif()
-
 include(${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake)
-
-set(CMAKE_BUILD_TYPE ${orig_build_type})
-unset(orig_build_type)

@@ -1,12 +1,11 @@
-// mainline:
-//   parse cmd line
-//   load xrc file (guiinit.cpp does most of instantiation)
-//   create & display main frame
-
-#include "wxvbam.h"
+#include "wx/wxvbam.h"
 
 #ifdef __WXMSW__
 #include <windows.h>
+#endif
+
+#ifdef __WXGTK3__
+#include <gdk/gdk.h>
 #endif
 
 #include <stdio.h>
@@ -30,26 +29,26 @@
 #include <wx/wxcrtvararg.h>
 #include <wx/zipstrm.h>
 
-#include "../gba/remote.h"
+#include "components/user_config/user_config.h"
+#include "core/gba/gbaSound.h"
+#include "wx/gb-builtin-over.h"
+#include "wx/builtin-over.h"
+#include "wx/builtin-xrc.h"
+#include "wx/config/cmdtab.h"
+#include "wx/config/command.h"
+#include "wx/config/emulated-gamepad.h"
+#include "wx/config/option-proxy.h"
+#include "wx/config/option.h"
+#include "wx/config/user-input.h"
+#include "wx/config/strutils.h"
+#include "wx/wayland.h"
+#include "wx/widgets/group-check-box.h"
+#include "wx/widgets/user-input-ctrl.h"
+#include "wx/widgets/utils.h"
 
-// The built-in xrc file
-#include "builtin-xrc.h"
-
-// The built-in vba-over.ini
-#include "builtin-over.h"
-#include "config/game-control.h"
-#include "config/option-proxy.h"
-#include "config/option.h"
-#include "config/user-input.h"
-#include "strutils.h"
-#include "wayland.h"
-#include "widgets/group-check-box.h"
-#include "widgets/user-input-ctrl.h"
-#include "wxhead.h"
-
-#ifdef __WXGTK__
-#include <gdk/gdk.h>
-#endif
+#if defined(VBAM_ENABLE_DEBUGGER)
+#include "core/gba/gbaRemote.h"
+#endif  // defined(VBAM_ENABLE_DEBUGGER)
 
 namespace {
 
@@ -62,17 +61,13 @@ void ResetMenuItemAccelerator(wxMenuItem* menu_item) {
     if (tab_index != wxString::npos) {
         new_label.resize(tab_index);
     }
-    std::set<config::UserInput> user_inputs =
-        gopts.shortcuts.InputsForCommand(menu_item->GetId());
-    for (const config::UserInput& user_input : user_inputs) {
-        if (user_input.device() != config::UserInput::Device::Keyboard) {
-            // Cannot use joystick keybinding as text without wx assertion error.
-            continue;
-        }
-
+    std::unordered_set<config::UserInput> user_inputs =
+        wxGetApp().bindings()->InputsForCommand(
+            config::ShortcutCommand(menu_item->GetId()));
+    if (!user_inputs.empty()) {
+        const config::UserInput& user_input = *user_inputs.begin();
         new_label.append('\t');
         new_label.append(user_input.ToLocalizedString());
-        break;
     }
 
     if (old_label != new_label) {
@@ -86,11 +81,11 @@ static const char kDotDir[] = "visualboyadvance-m";
 
 }  // namespace
 
-#ifndef NO_DEBUGGER
+#if defined(VBAM_ENABLE_DEBUGGER)
 void(*dbgMain)() = remoteStubMain;
 void(*dbgSignal)(int, int) = remoteStubSignal;
 void(*dbgOutput)(const char *, uint32_t) = debuggerOutput;
-#endif
+#endif  // defined(VBAM_ENABLE_DEBUGGER)
 
 #ifdef __WXMSW__
 
@@ -141,7 +136,7 @@ int main(int argc, char** argv) {
 #endif  // DEBUG
 
     // Launch under xwayland on Wayland if EGL is not available.
-#if defined(__WXGTK__) && !defined(HAVE_WAYLAND_EGL)
+#if defined(__WXGTK3__) && !defined(HAVE_WAYLAND_EGL)
     wxString xdg_session_type = wxGetenv("XDG_SESSION_TYPE");
     wxString wayland_display  = wxGetenv("WAYLAND_DISPLAY");
 
@@ -165,14 +160,6 @@ IMPLEMENT_DYNAMIC_CLASS(MainFrame, wxFrame)
 #ifndef NO_ONLINEUPDATES
 #include "autoupdater/autoupdater.h"
 #endif // NO_ONLINEUPDATES
-
-// Initializer for struct cmditem
-cmditem new_cmditem(const wxString cmd, const wxString name, int cmd_id,
-                    int mask_flags, wxMenuItem* mi)
-{
-    struct cmditem tmp = {cmd, name, cmd_id, mask_flags, mi};
-    return tmp;
-}
 
 // generate config file path
 static void get_config_path(wxPathList& path, bool exists = true)
@@ -218,7 +205,7 @@ static void get_config_path(wxPathList& path, bool exists = true)
 #if defined(__WXGTK__)
     // XDG spec manual support
     // ${XDG_CONFIG_HOME:-$HOME/.config}/`appname`
-    wxString old_config = wxString(getenv("HOME"), wxConvLibc) + wxT(FILE_SEP) + wxT(".vbam");
+    wxString old_config = wxString(getenv("HOME"), wxConvLibc) + kFileSep + ".vbam";
     wxString new_config(get_xdg_user_config_home().c_str(), wxConvLibc);
     if (!wxDirExists(old_config) && wxIsWritable(new_config))
     {
@@ -253,6 +240,22 @@ static void tack_full_path(wxString& s, const wxString& app = wxEmptyString)
 
     for (size_t i = 0; i < full_config_path.size(); i++)
         s += wxT("\n\t") + full_config_path[i] + app;
+}
+
+wxvbamApp::wxvbamApp()
+    : wxApp(),
+      pending_fullscreen(false),
+      frame(nullptr),
+      using_wayland(false),
+      emulated_gamepad_(std::bind(&wxvbamApp::bindings, this)),
+      sdl_poller_(this),
+      keyboard_input_handler_(this) {
+    Bind(wxEVT_ACTIVATE_APP, [this](wxActivateEvent& event) {
+        if (!event.GetActive()) {
+            keyboard_input_handler_.Reset();
+        }
+        event.Skip();
+    });
 }
 
 const wxString wxvbamApp::GetPluginsDir()
@@ -308,7 +311,9 @@ wxString wxvbamApp::GetAbsolutePath(wxString path)
 
     if (fn.IsRelative()) {
         fn.MakeRelativeTo(GetConfigurationPath());
-        fn.Normalize();
+        fn.Normalize(wxPATH_NORM_ENV_VARS | wxPATH_NORM_DOTS | wxPATH_NORM_TILDE |
+                     wxPATH_NORM_CASE | wxPATH_NORM_ABSOLUTE | wxPATH_NORM_LONG |
+                     wxPATH_NORM_SHORTCUT);
         return fn.GetFullPath();
     }
 
@@ -436,7 +441,7 @@ bool wxvbamApp::OnInit() {
 
     // process command-line options
     for (size_t i = 0; i < pending_optset.size(); i++) {
-        auto parts = strutils::split(pending_optset[i], wxT('='));
+        auto parts = config::str_split(pending_optset[i], wxT('='));
         opt_set(parts[0], parts[1]);
     }
 
@@ -466,13 +471,17 @@ bool wxvbamApp::OnInit() {
         }
     }
 
+    // load gb-over.ini
+    wxMemoryInputStream stream(gb_builtin_over, sizeof(gb_builtin_over));
+    gb_overrides_ = std::make_unique<wxFileConfig>(stream);
+
     // load vba-over.ini
     // rather than dealing with wxConfig's broken search path, just use
     // the same one that the xrc overrides use
     // this also allows us to override a group at a time, add commments, and
     // add the file from which the group came
     wxMemoryInputStream mis(builtin_over, sizeof(builtin_over));
-    overrides = new wxFileConfig(mis);
+    overrides_ = std::make_unique<wxFileConfig>(mis);
     wxRegEx cmtre;
     // not the most efficient thing to do: read entire file into a string
     // just to parse the comments out
@@ -482,8 +491,8 @@ bool wxvbamApp::OnInit() {
     long grp_idx;
 #define CMT_RE_START wxT("(^|[\n\r])# ?([^\n\r]*)(\r?\n|\r)\\[")
 
-    for (cont = overrides->GetFirstGroup(s, grp_idx); cont;
-         cont = overrides->GetNextGroup(s, grp_idx)) {
+    for (cont = overrides_->GetFirstGroup(s, grp_idx); cont;
+         cont = overrides_->GetNextGroup(s, grp_idx)) {
         // apparently even MacOSX sometimes uses the old \r by itself
         wxString cmt(CMT_RE_START);
         cmt += s + wxT("\\]");
@@ -493,7 +502,7 @@ bool wxvbamApp::OnInit() {
         else
             cmt = wxEmptyString;
 
-        overrides->Write(s + wxT("/comment"), cmt);
+        overrides_->Write(s + wxT("/comment"), cmt);
     }
 
     if (vba_over.FileExists()) {
@@ -509,10 +518,10 @@ bool wxvbamApp::OnInit() {
 
         for (cont = ov.GetFirstGroup(s, grp_idx); cont;
              cont = ov.GetNextGroup(s, grp_idx)) {
-            overrides->DeleteGroup(s);
-            overrides->SetPath(s);
+            overrides_->DeleteGroup(s);
+            overrides_->SetPath(s);
             ov.SetPath(s);
-            overrides->Write(wxT("path"), GetConfigurationPath());
+            overrides_->Write(wxT("path"), GetConfigurationPath());
             // apparently even MacOSX sometimes uses \r by itself
             wxString cmt(CMT_RE_START);
             cmt += s + wxT("\\]");
@@ -522,21 +531,17 @@ bool wxvbamApp::OnInit() {
             else
                 cmt = wxEmptyString;
 
-            overrides->Write(wxT("comment"), cmt);
+            overrides_->Write(wxT("comment"), cmt);
             long ent_idx;
 
             for (cont = ov.GetFirstEntry(s, ent_idx); cont;
                  cont = ov.GetNextEntry(s, ent_idx))
-                overrides->Write(s, ov.Read(s, wxEmptyString));
+                overrides_->Write(s, ov.Read(s, wxEmptyString));
 
             ov.SetPath(wxT("/"));
-            overrides->SetPath(wxT("/"));
+            overrides_->SetPath(wxT("/"));
         }
     }
-
-    // Initialize game bindings here, after defaults bindings, vbam.ini bindings
-    // and command line overrides have been applied.
-    config::GameControlState::Instance().OnGameBindingsChanged();
 
     // We need to gather this information before crating the MainFrame as the
     // OnSize / OnMove event handlers can fire during construction.
@@ -560,14 +565,8 @@ bool wxvbamApp::OnInit() {
         return false;
     }
 
-    // Measure the full display area.
-    wxRect display_rect;
-    for (unsigned int i = 0; i < wxDisplay::GetCount(); i++) {
-        display_rect.Union(wxDisplay(i).GetClientArea());
-    }
-
     // Ensure we are not drawing out of bounds.
-    if (display_rect.Intersects(client_rect)) {
+    if (widgets::GetDisplayRect().Intersects(client_rect)) {
         frame->SetSize(client_rect);
     }
 
@@ -757,8 +756,9 @@ bool wxvbamApp::OnCmdLineParsed(wxCmdLineParser& cl)
         }
 
         wxPrintf(_("The commands available for the Keyboard/* option are:\n\n"));
-        for (int i = 0; i < ncmds; i++)
-            wxPrintf(wxT("%s (%s)\n"), cmdtab[i].cmd.c_str(), cmdtab[i].name.c_str());
+        for (const cmditem& cmd_item : cmdtab) {
+            wxPrintf("%s (%s)\n", cmd_item.cmd.c_str(), cmd_item.name.c_str());
+        }
 
         console_mode = true;
         return true;
@@ -785,7 +785,7 @@ bool wxvbamApp::OnCmdLineParsed(wxCmdLineParser& cl)
 
     for (int i = 0; i < nparm; i++) {
         auto p     = cl.GetParam(i);
-        auto parts = strutils::split(p, wxT('='));
+        auto parts = config::str_split(p, wxT('='));
 
         if (parts.size() > 1) {
             opt_set(parts[0], parts[1]);
@@ -827,11 +827,34 @@ wxvbamApp::~wxvbamApp() {
         free(home);
         home = NULL;
     }
-    delete overrides;
 
 #ifndef NO_ONLINEUPDATES
     shutdownAutoupdater();
 #endif
+}
+
+wxEvtHandler* wxvbamApp::event_handler() {
+    // Use the active window, if any.
+    wxWindow* focused_window = wxWindow::FindFocus();
+    if (focused_window) {
+        return focused_window;
+    }
+
+    if (!frame) {
+        return nullptr;
+    }
+
+    auto panel = frame->GetPanel();
+    if (!panel || !panel->panel) {
+        return nullptr;
+    }
+
+    if (OPTION(kUIAllowJoystickBackgroundInput) || OPTION(kUIAllowKeyboardBackgroundInput)) {
+        // Use the game panel, if the background polling option is enabled.
+        return panel->panel->GetWindow()->GetEventHandler();
+    }
+
+    return nullptr;
 }
 
 MainFrame::MainFrame()
@@ -839,7 +862,6 @@ MainFrame::MainFrame()
       paused(false),
       menus_opened(0),
       dialog_opened(0),
-      focused(false),
 #ifndef NO_LINK
       gba_link_observer_(config::OptionID::kGBALinkHost,
                          std::bind(&MainFrame::EnableNetworkMenu, this)),
@@ -847,8 +869,6 @@ MainFrame::MainFrame()
       keep_on_top_styler_(this),
       status_bar_observer_(config::OptionID::kGenStatusBar,
                            std::bind(&MainFrame::OnStatusBarChanged, this)) {
-    jpoll = new JoystickPoller();
-    this->Connect(wxID_ANY, wxEVT_SHOW, wxShowEventHandler(JoystickPoller::ShowDialog), jpoll, jpoll);
 }
 
 MainFrame::~MainFrame() {
@@ -871,7 +891,7 @@ void MainFrame::OnStatusBarChanged() {
 }
 
 BEGIN_EVENT_TABLE(MainFrame, wxFrame)
-#include "cmd-evtable.h"
+#include "wx/cmd-evtable.h"
 EVT_CONTEXT_MENU(MainFrame::OnMenu)
 // this is the main window focus?  Or EVT_SET_FOCUS/EVT_KILL_FOCUS?
 EVT_ACTIVATE(MainFrame::OnActivate)
@@ -884,25 +904,35 @@ EVT_MOVE_START(MainFrame::OnMoveStart)
 EVT_MOVE_END(MainFrame::OnMoveEnd)
 EVT_SIZE(MainFrame::OnSize)
 
+#if defined(__WXMSW__)
+
 // For tracking menubar state.
 EVT_MENU_OPEN(MainFrame::MenuPopped)
 EVT_MENU_CLOSE(MainFrame::MenuPopped)
 EVT_MENU_HIGHLIGHT_ALL(MainFrame::MenuPopped)
 
+#endif  // defined(__WXMSW__)
+
 END_EVENT_TABLE()
 
-void MainFrame::OnActivate(wxActivateEvent& event)
-{
-    focused = event.GetActive();
+void MainFrame::OnActivate(wxActivateEvent& event) {
+    const bool focused = event.GetActive();
 
-    if (panel && focused)
+    if (!panel) {
+        // Nothing more to do if no game is active.
+        return;
+    }
+
+    if (focused) {
+        // Set the focus to the game panel.
         panel->SetFocus();
+    }
 
     if (OPTION(kPrefPauseWhenInactive)) {
-        if (panel && focused && !paused) {
+        // Handle user preferences for pausing the game when the window is inactive.
+        if (focused && !paused) {
             panel->Resume();
-        }
-        else if (panel && !focused) {
+        } else if (!focused) {
             panel->Pause();
         }
     }
@@ -976,33 +1006,6 @@ void MainFrame::OnSize(wxSizeEvent& event)
     OPTION(kGeomFullScreen) = IsFullScreen();
 }
 
-int MainFrame::FilterEvent(wxEvent& event) {
-    if (menus_opened || dialog_opened) {
-        return wxEventFilter::Event_Skip;
-    }
-
-    int command = 0;
-    if (event.GetEventType() == wxEVT_KEY_DOWN) {
-        const wxKeyEvent& key_event = static_cast<wxKeyEvent&>(event);
-        command = gopts.shortcuts.CommandForInput(config::UserInput(key_event));
-    } else if (event.GetEventType() == wxEVT_JOY) {
-        const wxJoyEvent& joy_event = static_cast<wxJoyEvent&>(event);
-        if (joy_event.pressed()) {
-            // We ignore "button up" events here.
-            command = gopts.shortcuts.CommandForInput(config::UserInput(joy_event));
-        }
-    }
-
-    if (command == 0) {
-        return wxEventFilter::Event_Skip;
-    }
-
-    wxCommandEvent command_event(wxEVT_COMMAND_MENU_SELECTED, command);
-    command_event.SetEventObject(this);
-    this->GetEventHandler()->ProcessEvent(command_event);
-    return wxEventFilter::Event_Processed;
-}
-
 wxString MainFrame::GetGamePath(wxString path)
 {
     wxString game_path = path;
@@ -1026,63 +1029,13 @@ wxString MainFrame::GetGamePath(wxString path)
     return game_path;
 }
 
-void MainFrame::SetJoystick()
-{
-    /* Remove all attached joysticks to avoid errors while
-     * destroying and creating the GameArea `panel`. */
-    joy.StopPolling();
-
-    if (!emulating)
-        return;
-
-    std::set<wxJoystick> needed_joysticks = gopts.shortcuts.Joysticks();
-    for (const auto& iter : gopts.game_control_bindings) {
-        for (const auto& input_iter : iter.second) {
-            needed_joysticks.emplace(input_iter.joystick());
-        }
-    }
-    joy.PollJoysticks(std::move(needed_joysticks));
-}
-
-void MainFrame::StopJoyPollTimer()
-{
-    if (jpoll && jpoll->IsRunning())
-        jpoll->Stop();
-}
-
-void MainFrame::StartJoyPollTimer()
-{
-    if (jpoll && !jpoll->IsRunning())
-        jpoll->Start();
-}
-
-bool MainFrame::IsJoyPollTimerRunning()
-{
-    return jpoll->IsRunning();
-}
-
-wxEvtHandler* MainFrame::GetJoyEventHandler()
-{
-    auto focused_window = wxWindow::FindFocus();
-
-    if (focused_window)
-        return focused_window;
-
-    auto panel = GetPanel();
-    if (!panel)
-        return nullptr;
-
-    if (OPTION(kUIAllowJoystickBackgroundInput))
-        return panel->GetEventHandler();
-
-    return nullptr;
-}
-
 void MainFrame::enable_menus()
 {
-    for (int i = 0; i < ncmds; i++)
-        if (cmdtab[i].mask_flags && cmdtab[i].mi)
-            cmdtab[i].mi->Enable((cmdtab[i].mask_flags & cmd_enable) != 0);
+    for (const cmditem& cmd_item : cmdtab) {
+        if (cmd_item.mask_flags && cmd_item.mi) {
+            cmd_item.mi->Enable((cmd_item.mask_flags & cmd_enable) != 0);
+        }
+    }
 
     if (cmd_enable & CMDEN_SAVST)
         for (int i = 0; i < 10; i++)
@@ -1210,17 +1163,18 @@ void MainFrame::ResetRecentAccelerators() {
 }
 
 void MainFrame::ResetMenuAccelerators() {
-    for (int i = 0; i < ncmds; i++) {
-        if (!cmdtab[i].mi) {
+    for (const cmditem& cmd_item : cmdtab) {
+        if (!cmd_item.mi) {
             continue;
         }
-        ResetMenuItemAccelerator(cmdtab[i].mi);
+        ResetMenuItemAccelerator(cmd_item.mi);
     }
     ResetRecentAccelerators();
 }
 
-void MainFrame::MenuPopped(wxMenuEvent& evt)
-{
+#if defined(__WXMSW__)
+
+void MainFrame::MenuPopped(wxMenuEvent& evt) {
     // We consider the menu closed when the main menubar or system menu is closed, not any submenus.
     // On Windows nullptr is the system menu.
     if (evt.GetEventType() == wxEVT_MENU_CLOSE && (evt.GetMenu() == nullptr || evt.GetMenu()->GetMenuBar() == GetMenuBar()))
@@ -1233,28 +1187,21 @@ void MainFrame::MenuPopped(wxMenuEvent& evt)
 
 // On Windows, opening the menubar will stop the app, but DirectSound will
 // loop, so we pause audio here.
-void MainFrame::SetMenusOpened(bool state)
-{
+void MainFrame::SetMenusOpened(bool state) {
     menus_opened = state;
-
-#ifdef __WXMSW__
     if (menus_opened)
         soundPause();
     else if (!paused)
         soundResume();
-#endif
 }
+
+#endif  // defined(__WXMSW__)
 
 // ShowModal that also disables emulator loop
 // uses dialog_opened as a nesting counter
 int MainFrame::ShowModal(wxDialog* dlg)
 {
     dlg->SetWindowStyle(dlg->GetWindowStyle() | wxCAPTION | wxRESIZE_BORDER);
-
-    if (OPTION(kDispKeepOnTop))
-        dlg->SetWindowStyle(dlg->GetWindowStyle() | wxSTAY_ON_TOP);
-    else
-        dlg->SetWindowStyle(dlg->GetWindowStyle() & ~wxSTAY_ON_TOP);
 
     CheckPointer(dlg);
     StartModal();
@@ -1325,8 +1272,6 @@ LinkMode MainFrame::GetConfiguredLinkMode()
         return LINK_DISCONNECTED;
         break;
     }
-
-    return LINK_DISCONNECTED;
 }
 
 #endif  // NO_LINK
@@ -1399,14 +1344,68 @@ void MainFrame::IdentifyRom()
     }
 }
 
-// global event filter
-// apparently required for win32; just setting accel table still misses
-// a few keys (e.g. only ctrl-x works for exit, but not esc & ctrl-q;
-// ctrl-w does not work for close).  It's possible another entity is
-// grabbing those keys, but I can't track it down.
 int wxvbamApp::FilterEvent(wxEvent& event)
 {
-    if (frame)
-        return frame->FilterEvent(event);
-    return wxApp::FilterEvent(event);
+    if (!frame) {
+        // Ignore early events.
+        return wxEventFilter::Event_Skip;
+    }
+
+    if (event.GetEventType() == wxEVT_KEY_DOWN || event.GetEventType() == wxEVT_KEY_UP) {
+        // Handle keyboard input events here to generate user input events.
+        keyboard_input_handler_.ProcessKeyEvent(static_cast<wxKeyEvent&>(event));
+        return wxEventFilter::Event_Skip;
+    }
+
+    if (event.GetEventType() != VBAM_EVT_USER_INPUT) {
+        // We only treat "VBAM_EVT_USER_INPUT" events here.
+        return wxEventFilter::Event_Skip;
+    }
+
+    if (!frame->CanProcessShortcuts()) {
+        return wxEventFilter::Event_Skip;
+    }
+
+    widgets::UserInputEvent& user_input_event = static_cast<widgets::UserInputEvent&>(event);
+    int command_id = wxID_NONE;
+    nonstd::optional<config::UserInput> user_input;
+
+    for (const auto& event_data : user_input_event.data()) {
+        if (!event_data.pressed) {
+            // We only treat key press events here.
+            continue;
+        }
+
+        const nonstd::optional<config::Command> command =
+            bindings_.CommandForInput(event_data.input);
+        if (command != nonstd::nullopt && command->is_shortcut()) {
+            // Associated shortcut command found.
+            command_id = command->shortcut().id();
+            user_input.emplace(event_data.input);
+            break;
+        }
+    }
+
+    if (command_id == wxID_NONE) {
+        // No associated command found.
+        return wxEventFilter::Event_Skip;
+    }
+
+    // Find the associated checkable menu item (if any).
+    for (const cmditem& cmd_item : cmdtab) {
+        if (cmd_item.cmd_id == command_id) {
+            if (cmd_item.mi && cmd_item.mi->IsCheckable()) {
+                // Toggle the checkable menu item.
+                cmd_item.mi->Check(!cmd_item.mi->IsChecked());
+            }
+            break;
+        }
+    }
+
+    // Queue the associated shortcut command event.
+    wxCommandEvent* command_event = new wxCommandEvent(wxEVT_MENU, command_id);
+    command_event->SetEventObject(this);
+    frame->GetEventHandler()->QueueEvent(command_event);
+
+    return user_input_event.FilterProcessedInput(user_input.value());
 }

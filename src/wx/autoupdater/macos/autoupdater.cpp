@@ -1,7 +1,6 @@
-#include "../autoupdater.h"
-#include "../../../common/version_cpp.h"
-#include "../../strutils.h"
-#include "sparkle-wrapper.h"
+#include "wx/autoupdater/autoupdater.h"
+
+#include "wx/autoupdater/macos/sparkle-wrapper.h"
 
 SparkleWrapper autoupdater;
 

@@ -3,9 +3,9 @@
 AAAAA_MAINICON ICON "icons/visualboyadvance-m.ico"
 
 #define wxUSE_NO_MANIFEST 1
-#include "wx/msw/wx.rc"
+#include <wx/msw/wx.rc>
 
-#include "version.h"
+#include "core/base/version_gen.h"
 
 /////////////////////////////////////////////////////////////////////////////
 //
