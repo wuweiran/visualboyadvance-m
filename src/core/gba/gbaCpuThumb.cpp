@@ -1781,7 +1781,7 @@ static INSN_REGPARM void thumbDD(uint32_t opcode)
 static INSN_REGPARM void thumbDF(uint32_t opcode)
 {
     //uint32_t address = 0;
-        clockTicks = 3;
+    clockTicks = 3;
     busPrefetchCount = 0;
     busPrefetchFrac = 0;
     CPUSoftwareInterrupt(opcode & 0xFF);

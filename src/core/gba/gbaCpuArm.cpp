@@ -2155,8 +2155,7 @@ static INSN_REGPARM void arm7F6(uint32_t opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_
         }                                                  \
     }
 
-// Final tick accounting for STM/LDM. LDM that reloads R15 keeps the
-// legacy cost: the pipeline refill dominates.
+// Final base-cycle accounting for STM/LDM.
 #define STM_FINISH                                                         \
     {                                                                      \
         clockTicks += 1;                                                \
