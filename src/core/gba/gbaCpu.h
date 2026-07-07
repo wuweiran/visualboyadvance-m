@@ -83,35 +83,6 @@ extern void CPUSoftwareInterrupt(int comment);
 extern bool g_dmaBrokeBurst;  // first cart access after a DMA is non-seq
 extern bool g_dmaBreakSkipOne; // that access slipped in pre-DMA; skip it
 
-// Timing modeling has been removed; these helpers remain as compatibility
-// hooks for shared CPU paths that still compute semantic base cycles.
-inline int dataTicksAccess16([[maybe_unused]] uint32_t address) { return 0; }
-inline int dataTicksAccess32([[maybe_unused]] uint32_t address) { return 0; }
-inline int dataTicksAccessSeq16([[maybe_unused]] uint32_t address) { return 0; }
-inline int dataTicksAccessSeq32([[maybe_unused]] uint32_t address) { return 0; }
-
-inline int codeTicksAccess16([[maybe_unused]] uint32_t address) { return 0; }
-inline int codeTicksAccess32([[maybe_unused]] uint32_t address) { return 0; }
-inline int codeTicksAccessSeq16([[maybe_unused]] uint32_t address) { return 0; }
-inline int codeTicksAccessSeq32([[maybe_unused]] uint32_t address) { return 0; }
-
-inline int busPrefetchRomFloor([[maybe_unused]] int legacy, int pure,
-    [[maybe_unused]] int halfwords, [[maybe_unused]] bool cartData)
-{
-    return pure;
-}
-
-inline int busPrefetchRomStall()
-{
-    return 0;
-}
-
-inline int busPrefetchAbortStall([[maybe_unused]] uint32_t dataAddr,
-    [[maybe_unused]] int elapsed)
-{
-    return 0;
-}
-
 // Emulates the Cheat System (m) code
 inline void cpuMasterCodeCheck()
 {
