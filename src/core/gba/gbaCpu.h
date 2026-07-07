@@ -84,6 +84,34 @@ extern bool g_dmaBrokeBurst;  // first cart access after a DMA is non-seq
 extern bool g_dmaBreakSkipOne; // that access slipped in pre-DMA; skip it
 
 // Waitstates when accessing data
+#ifdef VBAM_GBA_SEMANTIC_ONLY_TIMING
+inline int dataTicksAccess16([[maybe_unused]] uint32_t address) { return 0; }
+inline int dataTicksAccess32([[maybe_unused]] uint32_t address) { return 0; }
+inline int dataTicksAccessSeq16([[maybe_unused]] uint32_t address) { return 0; }
+inline int dataTicksAccessSeq32([[maybe_unused]] uint32_t address) { return 0; }
+
+inline int codeTicksAccess16([[maybe_unused]] uint32_t address) { return 0; }
+inline int codeTicksAccess32([[maybe_unused]] uint32_t address) { return 0; }
+inline int codeTicksAccessSeq16([[maybe_unused]] uint32_t address) { return 0; }
+inline int codeTicksAccessSeq32([[maybe_unused]] uint32_t address) { return 0; }
+
+inline int busPrefetchRomFloor([[maybe_unused]] int legacy, int pure,
+    [[maybe_unused]] int halfwords, [[maybe_unused]] bool cartData)
+{
+    return pure;
+}
+
+inline int busPrefetchRomStall()
+{
+    return 0;
+}
+
+inline int busPrefetchAbortStall([[maybe_unused]] uint32_t dataAddr,
+    [[maybe_unused]] int elapsed)
+{
+    return 0;
+}
+#else
 inline int dataTicksAccess16(uint32_t address) // DATA 8/16bits NON SEQ
 {
     int addr = (address >> 24) & 15;
@@ -356,6 +384,7 @@ inline int busPrefetchAbortStall(uint32_t dataAddr, int elapsed)
         return 0;
     return ((elapsed + 1) % (memoryWaitSeq[addr] + 1)) == 0 ? 1 : 0;
 }
+#endif
 
 // Emulates the Cheat System (m) code
 inline void cpuMasterCodeCheck()
@@ -365,7 +394,11 @@ inline void cpuMasterCodeCheck()
         if (systemReadJoypads())
             joy = systemReadJoypad(-1);
         uint32_t ext = (joy >> 10);
+#ifndef VBAM_GBA_SEMANTIC_ONLY_TIMING
         cpuTotalTicks += cheatsCheckKeys(P1 ^ 0x3FF, ext);
+#else
+        cheatsCheckKeys(P1 ^ 0x3FF, ext);
+#endif
     }
 }
 

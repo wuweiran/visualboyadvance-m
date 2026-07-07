@@ -108,6 +108,10 @@ target_link_libraries(vbam-core
     PUBLIC vbam-core-base ${ZLIB_LIBRARY}
 )
 
+if(ENABLE_GBA_SEMANTIC_ONLY_TIMING)
+    target_compile_definitions(vbam-core PRIVATE VBAM_GBA_SEMANTIC_ONLY_TIMING)
+endif()
+
 if(ENABLE_DEBUGGER)
     target_sources(vbam-core
         PRIVATE

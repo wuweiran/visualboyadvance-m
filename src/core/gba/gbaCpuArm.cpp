@@ -99,6 +99,12 @@ static void count(uint32_t opcode, int cond_res)
 #define NEG(i) ((i) >> 31)
 #define POS(i) ((~(i)) >> 31)
 
+#ifdef VBAM_GBA_SEMANTIC_ONLY_TIMING
+#define GBA_ADD_CLOCK_TICKS(value) ((void)(value))
+#else
+#define GBA_ADD_CLOCK_TICKS(value) (clockTicks += (value))
+#endif
+
 // The following macros are used for optimization; any not defined for a
 // particular compiler/CPU combination default to the C core versions.
 //
@@ -1293,18 +1299,18 @@ static inline uint32_t arm7_mull_c_flag(uint32_t rm, uint32_t rs, bool sign_rs) 
             rs = ~rs;                                                  \
     }                                                                  \
     if ((rs & 0xFFFFFF00) == 0)                                        \
-        clockTicks += 0;                                               \
+        GBA_ADD_CLOCK_TICKS(0);                                               \
     else if ((rs & 0xFFFF0000) == 0)                                   \
-        clockTicks += 1;                                               \
+        GBA_ADD_CLOCK_TICKS(1);                                               \
     else if ((rs & 0xFF000000) == 0)                                   \
-        clockTicks += 2;                                               \
+        GBA_ADD_CLOCK_TICKS(2);                                               \
     else                                                               \
-        clockTicks += 3;                                               \
+        GBA_ADD_CLOCK_TICKS(3);                                               \
     int mulPure = clockTicks + CYCLES + 1;                             \
     if (busPrefetchEnable && busPrefetchCount == 0)                    \
         busPrefetchCount = ((busPrefetchCount + 1)                     \
             << (clockTicks + CYCLES - 1)) - 1;                         \
-    clockTicks += CYCLES + 1 + codeTicksAccess32(armNextPC);           \
+    GBA_ADD_CLOCK_TICKS(CYCLES + 1 + codeTicksAccess32(armNextPC));           \
     clockTicks = busPrefetchRomFloor(clockTicks, mulPure, 2, false);
 
 #define OP_MUL \
@@ -1629,7 +1635,7 @@ static INSN_REGPARM void arm121(uint32_t opcode)
         bool _strPrefetchActive = busPrefetch;                                   \
         int _strDataTicks = dataTicksAccess##SIZE(address);                      \
         clockTicks = 2 + _strDataTicks + codeTicksAccess32(armNextPC);           \
-        if (_strPrefetchActive) clockTicks += 1;                                 \
+        if (_strPrefetchActive) GBA_ADD_CLOCK_TICKS(1);                                 \
     }
 #define LDR(CALC_OFFSET, CALC_ADDRESS, LOAD_DATA, WRITEBACK, SIZE) \
     LDRSTR_INIT(CALC_OFFSET, CALC_ADDRESS);                        \
@@ -1643,12 +1649,12 @@ static INSN_REGPARM void arm121(uint32_t opcode)
         armNextPC = reg[15].I;                                     \
         reg[15].I += 4;                                            \
         ARM_PREFETCH;                                              \
-        clockTicks += 2 + dataTicksAccessSeq32(address)            \
-            + dataTicksAccessSeq32(address);                       \
+        GBA_ADD_CLOCK_TICKS(2 + dataTicksAccessSeq32(address)            \
+            + dataTicksAccessSeq32(address));                       \
     }                                                              \
     {                                                              \
         int _ldrDataTicks = dataTicksAccess##SIZE(address);        \
-        clockTicks += 3 + _ldrDataTicks + codeTicksAccess32(armNextPC); \
+        GBA_ADD_CLOCK_TICKS(3 + _ldrDataTicks + codeTicksAccess32(armNextPC)); \
     }
 #define STR_POSTDEC(CALC_OFFSET, STORE_DATA, SIZE) \
     STR(CALC_OFFSET, ADDRESS_POST, STORE_DATA, WRITEBACK_NONE, WRITEBACK_POSTDEC, SIZE)
@@ -2025,11 +2031,11 @@ static INSN_REGPARM void arm7F6(uint32_t opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_
         uint32_t _stmAddr = address;                                       \
         CPUWriteMemory(_stmAddr, reg[(num)].I);                            \
         if (!count) {                                                      \
-            clockTicks += 1 + dataTicksAccess32(_stmAddr);                 \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_stmAddr));                 \
         } else if ((_stmAddr >> 24) != ((_stmAddr - 4) >> 24)) {           \
-            clockTicks += 1 + dataTicksAccess32(_stmAddr);                 \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_stmAddr));                 \
         } else {                                                           \
-            clockTicks += 1 + dataTicksAccessSeq32(_stmAddr);              \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccessSeq32(_stmAddr));              \
         }                                                                  \
         count++;                                                           \
         address += 4;                                                      \
@@ -2039,11 +2045,11 @@ static INSN_REGPARM void arm7F6(uint32_t opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_
         uint32_t _stmAddr = address;                                       \
         CPUWriteMemory(_stmAddr, reg[(num)].I);                            \
         if (!count) {                                                      \
-            clockTicks += 1 + dataTicksAccess32(_stmAddr);                 \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_stmAddr));                 \
         } else if ((_stmAddr >> 24) != ((_stmAddr - 4) >> 24)) {           \
-            clockTicks += 1 + dataTicksAccess32(_stmAddr);                 \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_stmAddr));                 \
         } else {                                                           \
-            clockTicks += 1 + dataTicksAccessSeq32(_stmAddr);              \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccessSeq32(_stmAddr));              \
         }                                                                  \
         reg[base].I = temp;                                                \
         count++;                                                           \
@@ -2054,13 +2060,13 @@ static INSN_REGPARM void arm7F6(uint32_t opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_
         uint32_t _ldmAddr = address;                                       \
         reg[(num)].I = CPUReadMemory(_ldmAddr);                            \
         if (!count) {                                                      \
-            clockTicks += 1 + dataTicksAccess32(_ldmAddr);                 \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_ldmAddr));                 \
         } else if ((_ldmAddr >> 24) != ((_ldmAddr - 4) >> 24)) {           \
             /* crossing memory region: access becomes non-sequential */    \
-            clockTicks += busPrefetchAbortStall(_ldmAddr, clockTicks);     \
-            clockTicks += 1 + dataTicksAccess32(_ldmAddr);                 \
+            GBA_ADD_CLOCK_TICKS(busPrefetchAbortStall(_ldmAddr, clockTicks));     \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_ldmAddr));                 \
         } else {                                                           \
-            clockTicks += 1 + dataTicksAccessSeq32(_ldmAddr);              \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccessSeq32(_ldmAddr));              \
         }                                                                  \
         count++;                                                           \
         address += 4;                                                      \
@@ -2108,11 +2114,11 @@ static INSN_REGPARM void arm7F6(uint32_t opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_
         uint32_t _stmPCAddr = address;                                     \
         CPUWriteMemory(_stmPCAddr, reg[15].I + 4);                         \
         if (!count) {                                                      \
-            clockTicks += 1 + dataTicksAccess32(_stmPCAddr);               \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_stmPCAddr));               \
         } else if ((_stmPCAddr >> 24) != ((_stmPCAddr - 4) >> 24)) {       \
-            clockTicks += 1 + dataTicksAccess32(_stmPCAddr);               \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_stmPCAddr));               \
         } else {                                                           \
-            clockTicks += 1 + dataTicksAccessSeq32(_stmPCAddr);            \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccessSeq32(_stmPCAddr));            \
         }                                                                  \
         count++;                                                           \
     }
@@ -2121,11 +2127,11 @@ static INSN_REGPARM void arm7F6(uint32_t opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_
         uint32_t _stmPCAddr = address;                                     \
         CPUWriteMemory(_stmPCAddr, reg[15].I + 4);                         \
         if (!count) {                                                      \
-            clockTicks += 1 + dataTicksAccess32(_stmPCAddr);               \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_stmPCAddr));               \
         } else if ((_stmPCAddr >> 24) != ((_stmPCAddr - 4) >> 24)) {       \
-            clockTicks += 1 + dataTicksAccess32(_stmPCAddr);               \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_stmPCAddr));               \
         } else {                                                           \
-            clockTicks += 1 + dataTicksAccessSeq32(_stmPCAddr);            \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccessSeq32(_stmPCAddr));            \
         }                                                                  \
         reg[base].I = temp;                                                \
         count++;                                                           \
@@ -2183,11 +2189,11 @@ static INSN_REGPARM void arm7F6(uint32_t opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_
         uint32_t _ldmPCAddr = address;                                     \
         reg[15].I = CPUReadMemory(_ldmPCAddr);                             \
         if (!count) {                                                      \
-            clockTicks += 1 + dataTicksAccess32(_ldmPCAddr);               \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_ldmPCAddr));               \
         } else if ((_ldmPCAddr >> 24) != ((_ldmPCAddr - 4) >> 24)) {       \
-            clockTicks += 1 + dataTicksAccess32(_ldmPCAddr);               \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_ldmPCAddr));               \
         } else {                                                           \
-            clockTicks += 1 + dataTicksAccessSeq32(_ldmPCAddr);            \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccessSeq32(_ldmPCAddr));            \
         }                                                                  \
         count++;                                                           \
     }                                                                      \
@@ -2195,7 +2201,7 @@ static INSN_REGPARM void arm7F6(uint32_t opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_
         armNextPC = reg[15].I;                                             \
         reg[15].I += 4;                                                    \
         ARM_PREFETCH;                                                      \
-        clockTicks += 1 + codeTicksAccessSeq32(armNextPC);                 \
+        GBA_ADD_CLOCK_TICKS(1 + codeTicksAccessSeq32(armNextPC));                 \
     }
 #define STM_ALL_2        \
     STM_LOW(STM_REG);    \
@@ -2212,11 +2218,11 @@ static INSN_REGPARM void arm7F6(uint32_t opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_
         uint32_t _ldmPCAddr = address;                                     \
         reg[15].I = CPUReadMemory(_ldmPCAddr);                             \
         if (!count) {                                                      \
-            clockTicks += 1 + dataTicksAccess32(_ldmPCAddr);               \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_ldmPCAddr));               \
         } else if ((_ldmPCAddr >> 24) != ((_ldmPCAddr - 4) >> 24)) {       \
-            clockTicks += 1 + dataTicksAccess32(_ldmPCAddr);               \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_ldmPCAddr));               \
         } else {                                                           \
-            clockTicks += 1 + dataTicksAccessSeq32(_ldmPCAddr);            \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccessSeq32(_ldmPCAddr));            \
         }                                                                  \
         count++;                                                           \
     } else {                                                               \
@@ -2234,7 +2240,7 @@ static INSN_REGPARM void arm7F6(uint32_t opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_
             reg[15].I = armNextPC + 2;                     \
             THUMB_PREFETCH;                                \
         }                                                  \
-        clockTicks += 1 + codeTicksAccessSeq32(armNextPC); \
+        GBA_ADD_CLOCK_TICKS(1 + codeTicksAccessSeq32(armNextPC)); \
     }
 
 // Final tick accounting for STM/LDM. `address` is one past the last
@@ -2247,7 +2253,7 @@ static INSN_REGPARM void arm7F6(uint32_t opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_
         int _pure = clockTicks + 1;                                        \
         uint32_t _fr = ((address - 4 * count) >> 24) & 15;                 \
         uint32_t _lr = ((address - 4) >> 24) & 15;                         \
-        clockTicks += 1 + codeTicksAccess32(armNextPC);                    \
+        GBA_ADD_CLOCK_TICKS(1 + codeTicksAccess32(armNextPC));                    \
         clockTicks = busPrefetchRomFloor(clockTicks, _pure, 2,             \
                                          count == 0 || _fr < 0x02          \
                                              || _lr >= 0x08);              \
@@ -2257,7 +2263,7 @@ static INSN_REGPARM void arm7F6(uint32_t opcode) { LDR_PREINC_WB(OFFSET_ROR, OP_
         int _pure = clockTicks + 2;                                        \
         uint32_t _fr = ((address - 4 * count) >> 24) & 15;                 \
         uint32_t _lr = ((address - 4) >> 24) & 15;                         \
-        clockTicks += 2 + codeTicksAccess32(armNextPC);                    \
+        GBA_ADD_CLOCK_TICKS(2 + codeTicksAccess32(armNextPC));                    \
         clockTicks = busPrefetchRomFloor(clockTicks, _pure, 2,             \
                                          count == 0                        \
                                              || (opcode & (1U << 15)) != 0 \

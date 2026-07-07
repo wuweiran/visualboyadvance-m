@@ -78,6 +78,12 @@ static INSN_REGPARM void thumbBreakpoint(uint32_t opcode)
 #define NEG(i) ((i) >> 31)
 #define POS(i) ((~(i)) >> 31)
 
+#ifdef VBAM_GBA_SEMANTIC_ONLY_TIMING
+#define GBA_ADD_CLOCK_TICKS(value) ((void)(value))
+#else
+#define GBA_ADD_CLOCK_TICKS(value) (clockTicks += (value))
+#endif
+
 #ifndef C_CORE
 #ifdef __GNUC__
 #ifdef __POWERPC__
@@ -1149,16 +1155,16 @@ static INSN_REGPARM void thumb43_1(uint32_t opcode)
     if (((int32_t)rm) < 0)
         rm = ~rm;
     if ((rm & 0xFFFFFF00) == 0) {
-        // clockTicks += 0;
+        // GBA_ADD_CLOCK_TICKS(0);
     } else if ((rm & 0xFFFF0000) == 0)
-        clockTicks += 1;
+        GBA_ADD_CLOCK_TICKS(1);
     else if ((rm & 0xFF000000) == 0)
-        clockTicks += 2;
+        GBA_ADD_CLOCK_TICKS(2);
     else
-        clockTicks += 3;
+        GBA_ADD_CLOCK_TICKS(3);
     if (busPrefetchEnable)
         busPrefetchCount = (busPrefetchCount << clockTicks) | (0xFF >> (8 - clockTicks));
-    clockTicks += codeTicksAccess16(armNextPC) + 1;
+    GBA_ADD_CLOCK_TICKS(codeTicksAccess16(armNextPC) + 1);
     Z_FLAG = reg[dest].I ? false : true;
     N_FLAG = reg[dest].I & 0x80000000 ? true : false;
 }
@@ -1333,7 +1339,7 @@ static INSN_REGPARM void thumb48(uint32_t opcode)
     { int _dt = dataTicksAccess32(address); int _dr = (address >> 24) & 15;
       clockTicks = busPrefetchRomFloor(3 + _dt + codeTicksAccess16(armNextPC),
                                        3 + _dt, 1, _dr < 0x02 || _dr >= 0x08);
-      if (_dr >= 0x08) clockTicks += busPrefetchRomStall(); }
+      if (_dr >= 0x08) GBA_ADD_CLOCK_TICKS(busPrefetchRomStall()); }
 }
 
 // STR Rd, [Rs, Rn]
@@ -1376,7 +1382,7 @@ static INSN_REGPARM void thumb56(uint32_t opcode)
     { int _dt = dataTicksAccess16(address); int _dr = (address >> 24) & 15;
       clockTicks = busPrefetchRomFloor(3 + _dt + codeTicksAccess16(armNextPC),
                                        3 + _dt, 1, _dr < 0x02 || _dr >= 0x08);
-      if (_dr >= 0x08) clockTicks += busPrefetchRomStall(); }
+      if (_dr >= 0x08) GBA_ADD_CLOCK_TICKS(busPrefetchRomStall()); }
 }
 
 // LDR Rd, [Rs, Rn]
@@ -1389,7 +1395,7 @@ static INSN_REGPARM void thumb58(uint32_t opcode)
     { int _dt = dataTicksAccess32(address); int _dr = (address >> 24) & 15;
       clockTicks = busPrefetchRomFloor(3 + _dt + codeTicksAccess16(armNextPC),
                                        3 + _dt, 1, _dr < 0x02 || _dr >= 0x08);
-      if (_dr >= 0x08) clockTicks += busPrefetchRomStall(); }
+      if (_dr >= 0x08) GBA_ADD_CLOCK_TICKS(busPrefetchRomStall()); }
 }
 
 // LDRH Rd, [Rs, Rn]
@@ -1402,7 +1408,7 @@ static INSN_REGPARM void thumb5A(uint32_t opcode)
     { int _dt = dataTicksAccess32(address); int _dr = (address >> 24) & 15;
       clockTicks = busPrefetchRomFloor(3 + _dt + codeTicksAccess16(armNextPC),
                                        3 + _dt, 1, _dr < 0x02 || _dr >= 0x08);
-      if (_dr >= 0x08) clockTicks += busPrefetchRomStall(); }
+      if (_dr >= 0x08) GBA_ADD_CLOCK_TICKS(busPrefetchRomStall()); }
 }
 
 // LDRB Rd, [Rs, Rn]
@@ -1415,7 +1421,7 @@ static INSN_REGPARM void thumb5C(uint32_t opcode)
     { int _dt = dataTicksAccess16(address); int _dr = (address >> 24) & 15;
       clockTicks = busPrefetchRomFloor(3 + _dt + codeTicksAccess16(armNextPC),
                                        3 + _dt, 1, _dr < 0x02 || _dr >= 0x08);
-      if (_dr >= 0x08) clockTicks += busPrefetchRomStall(); }
+      if (_dr >= 0x08) GBA_ADD_CLOCK_TICKS(busPrefetchRomStall()); }
 }
 
 // LDSH Rd, [Rs, Rn]
@@ -1428,7 +1434,7 @@ static INSN_REGPARM void thumb5E(uint32_t opcode)
     { int _dt = dataTicksAccess16(address); int _dr = (address >> 24) & 15;
       clockTicks = busPrefetchRomFloor(3 + _dt + codeTicksAccess16(armNextPC),
                                        3 + _dt, 1, _dr < 0x02 || _dr >= 0x08);
-      if (_dr >= 0x08) clockTicks += busPrefetchRomStall(); }
+      if (_dr >= 0x08) GBA_ADD_CLOCK_TICKS(busPrefetchRomStall()); }
 }
 
 // STR Rd, [Rs, #Imm]
@@ -1451,7 +1457,7 @@ static INSN_REGPARM void thumb68(uint32_t opcode)
     { int _dt = dataTicksAccess32(address); int _dr = (address >> 24) & 15;
       clockTicks = busPrefetchRomFloor(3 + _dt + codeTicksAccess16(armNextPC),
                                        3 + _dt, 1, _dr < 0x02 || _dr >= 0x08);
-      if (_dr >= 0x08) clockTicks += busPrefetchRomStall(); }
+      if (_dr >= 0x08) GBA_ADD_CLOCK_TICKS(busPrefetchRomStall()); }
 }
 
 // STRB Rd, [Rs, #Imm]
@@ -1474,7 +1480,7 @@ static INSN_REGPARM void thumb78(uint32_t opcode)
     { int _dt = dataTicksAccess16(address); int _dr = (address >> 24) & 15;
       clockTicks = busPrefetchRomFloor(3 + _dt + codeTicksAccess16(armNextPC),
                                        3 + _dt, 1, _dr < 0x02 || _dr >= 0x08);
-      if (_dr >= 0x08) clockTicks += busPrefetchRomStall(); }
+      if (_dr >= 0x08) GBA_ADD_CLOCK_TICKS(busPrefetchRomStall()); }
 }
 
 // STRH Rd, [Rs, #Imm]
@@ -1497,7 +1503,7 @@ static INSN_REGPARM void thumb88(uint32_t opcode)
     { int _dt = dataTicksAccess16(address); int _dr = (address >> 24) & 15;
       clockTicks = busPrefetchRomFloor(3 + _dt + codeTicksAccess16(armNextPC),
                                        3 + _dt, 1, _dr < 0x02 || _dr >= 0x08);
-      if (_dr >= 0x08) clockTicks += busPrefetchRomStall(); }
+      if (_dr >= 0x08) GBA_ADD_CLOCK_TICKS(busPrefetchRomStall()); }
 }
 
 // STR R0~R7, [SP, #Imm]
@@ -1522,7 +1528,7 @@ static INSN_REGPARM void thumb98(uint32_t opcode)
     { int _dt = dataTicksAccess32(address); int _dr = (address >> 24) & 15;
       clockTicks = busPrefetchRomFloor(3 + _dt + codeTicksAccess16(armNextPC),
                                        3 + _dt, 1, _dr < 0x02 || _dr >= 0x08);
-      if (_dr >= 0x08) clockTicks += busPrefetchRomStall(); }
+      if (_dr >= 0x08) GBA_ADD_CLOCK_TICKS(busPrefetchRomStall()); }
 }
 
 // PC/stack-related ///////////////////////////////////////////////////////
@@ -1561,11 +1567,11 @@ static INSN_REGPARM void thumbB0(uint32_t opcode)
         uint32_t _pushAddr = address;                                      \
         CPUWriteMemory(_pushAddr, reg[(r)].I);                             \
         if (!count) {                                                      \
-            clockTicks += 1 + dataTicksAccess32(_pushAddr);                \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_pushAddr));                \
         } else if ((_pushAddr >> 24) != ((_pushAddr - 4) >> 24)) {         \
-            clockTicks += 1 + dataTicksAccess32(_pushAddr);                \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_pushAddr));                \
         } else {                                                           \
-            clockTicks += 1 + dataTicksAccessSeq32(_pushAddr);             \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccessSeq32(_pushAddr));             \
         }                                                                  \
         count++;                                                           \
         address += 4;                                                      \
@@ -1576,11 +1582,11 @@ static INSN_REGPARM void thumbB0(uint32_t opcode)
         uint32_t _popAddr = address;                                       \
         reg[(r)].I = CPUReadMemory(_popAddr);                              \
         if (!count) {                                                      \
-            clockTicks += 1 + dataTicksAccess32(_popAddr);                 \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_popAddr));                 \
         } else if ((_popAddr >> 24) != ((_popAddr - 4) >> 24)) {           \
-            clockTicks += 1 + dataTicksAccess32(_popAddr);                 \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_popAddr));                 \
         } else {                                                           \
-            clockTicks += 1 + dataTicksAccessSeq32(_popAddr);              \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccessSeq32(_popAddr));              \
         }                                                                  \
         count++;                                                           \
         address += 4;                                                      \
@@ -1602,7 +1608,7 @@ static INSN_REGPARM void thumbB4(uint32_t opcode)
     PUSH_REG(32, 5);
     PUSH_REG(64, 6);
     PUSH_REG(128, 7);
-    clockTicks += 1 + codeTicksAccess16(armNextPC);
+    GBA_ADD_CLOCK_TICKS(1 + codeTicksAccess16(armNextPC));
     reg[13].I = temp;
 }
 
@@ -1623,7 +1629,7 @@ static INSN_REGPARM void thumbB5(uint32_t opcode)
     PUSH_REG(64, 6);
     PUSH_REG(128, 7);
     PUSH_REG(256, 14);
-    clockTicks += 1 + codeTicksAccess16(armNextPC);
+    GBA_ADD_CLOCK_TICKS(1 + codeTicksAccess16(armNextPC));
     reg[13].I = temp;
 }
 
@@ -1644,7 +1650,7 @@ static INSN_REGPARM void thumbBC(uint32_t opcode)
     POP_REG(64, 6);
     POP_REG(128, 7);
     reg[13].I = temp;
-    clockTicks += 2 + codeTicksAccess16(armNextPC);
+    GBA_ADD_CLOCK_TICKS(2 + codeTicksAccess16(armNextPC));
 }
 
 // POP {Rlist, PC}
@@ -1667,11 +1673,11 @@ static INSN_REGPARM void thumbBD(uint32_t opcode)
         uint32_t _popPCAddr = address;
         reg[15].I = (CPUReadMemory(_popPCAddr) & 0xFFFFFFFE);
         if (!count) {
-            clockTicks += 1 + dataTicksAccess32(_popPCAddr);
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_popPCAddr));
         } else if ((_popPCAddr >> 24) != ((_popPCAddr - 4) >> 24)) {
-            clockTicks += 1 + dataTicksAccess32(_popPCAddr);
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_popPCAddr));
         } else {
-            clockTicks += 1 + dataTicksAccessSeq32(_popPCAddr);
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccessSeq32(_popPCAddr));
         }
         count++;
     }
@@ -1681,7 +1687,7 @@ static INSN_REGPARM void thumbBD(uint32_t opcode)
     THUMB_PREFETCH;
     busPrefetchCount = 0;
     busPrefetchFrac = 0;
-    clockTicks += 3 + (codeTicksAccess16(armNextPC) * 2);
+    GBA_ADD_CLOCK_TICKS(3 + (codeTicksAccess16(armNextPC) * 2));
 }
 
 // Load/store multiple ////////////////////////////////////////////////////
@@ -1692,11 +1698,11 @@ static INSN_REGPARM void thumbBD(uint32_t opcode)
         CPUWriteMemory(_stmAddr, reg[(r)].I);                              \
         reg[(b)].I = temp;                                                 \
         if (!count) {                                                      \
-            clockTicks += 1 + dataTicksAccess32(_stmAddr);                 \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_stmAddr));                 \
         } else if ((_stmAddr >> 24) != ((_stmAddr - 4) >> 24)) {           \
-            clockTicks += 1 + dataTicksAccess32(_stmAddr);                 \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_stmAddr));                 \
         } else {                                                           \
-            clockTicks += 1 + dataTicksAccessSeq32(_stmAddr);              \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccessSeq32(_stmAddr));              \
         }                                                                  \
         count++;                                                           \
         address += 4;                                                      \
@@ -1707,13 +1713,13 @@ static INSN_REGPARM void thumbBD(uint32_t opcode)
         uint32_t _ldmAddr = address;                                       \
         reg[(r)].I = CPUReadMemory(_ldmAddr);                              \
         if (!count) {                                                      \
-            clockTicks += 1 + dataTicksAccess32(_ldmAddr);                 \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_ldmAddr));                 \
         } else if ((_ldmAddr >> 24) != ((_ldmAddr - 4) >> 24)) {           \
             /* crossing memory region: access becomes non-sequential */    \
-            clockTicks += busPrefetchAbortStall(_ldmAddr, clockTicks);     \
-            clockTicks += 1 + dataTicksAccess32(_ldmAddr);                 \
+            GBA_ADD_CLOCK_TICKS(busPrefetchAbortStall(_ldmAddr, clockTicks));     \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccess32(_ldmAddr));                 \
         } else {                                                           \
-            clockTicks += 1 + dataTicksAccessSeq32(_ldmAddr);              \
+            GBA_ADD_CLOCK_TICKS(1 + dataTicksAccessSeq32(_ldmAddr));              \
         }                                                                  \
         count++;                                                           \
         address += 4;                                                      \
@@ -1737,7 +1743,7 @@ static INSN_REGPARM void thumbC0(uint32_t opcode)
     THUMB_STM_REG(32, 5, regist);
     THUMB_STM_REG(64, 6, regist);
     THUMB_STM_REG(128, 7, regist);
-    clockTicks += 1 + codeTicksAccess16(armNextPC);
+    GBA_ADD_CLOCK_TICKS(1 + codeTicksAccess16(armNextPC));
 }
 
 // LDM R0~R7!, {Rlist}
@@ -1758,7 +1764,7 @@ static INSN_REGPARM void thumbC8(uint32_t opcode)
     THUMB_LDM_REG(32, 5);
     THUMB_LDM_REG(64, 6);
     THUMB_LDM_REG(128, 7);
-    clockTicks += 2 + codeTicksAccess16(armNextPC);
+    GBA_ADD_CLOCK_TICKS(2 + codeTicksAccess16(armNextPC));
     if (!(opcode & (1 << regist)))
         reg[regist].I = temp;
 }
@@ -1773,8 +1779,8 @@ static INSN_REGPARM void thumbC8(uint32_t opcode)
         armNextPC = reg[15].I;                                          \
         reg[15].I += 2;                                                 \
         THUMB_PREFETCH;                                                 \
-        clockTicks += codeTicksAccessSeq16(armNextPC)                   \
-            + codeTicksAccess16(armNextPC) + 2;                         \
+        GBA_ADD_CLOCK_TICKS(codeTicksAccessSeq16(armNextPC)                   \
+            + codeTicksAccess16(armNextPC) + 2);                         \
         busPrefetchCount = 0;                                           \
         busPrefetchFrac = 0;                                            \
     }
